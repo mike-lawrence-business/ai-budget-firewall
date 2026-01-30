@@ -163,8 +163,33 @@ export default {
             let rate = pricing[model] ?? pricing[Object.keys(pricing).find(k => model && model.includes(k))] ?? pricing.default ?? 0.005;
             const cost = estimateCostFromPricing(rate, prompt + completion);
             if (cost > 0) {
-              await addSpend(budgetId, dateKey, cost);
-              await recordAudit(budgetId, model, { prompt, completion }, cost);
+              // Idempotency: if client provided X-Request-ID header, check with DO whether we've already processed this request
+              const requestId = request.headers.get('X-Request-ID');
+              let shouldCharge = true;
+              if (requestId) {
+                try {
+                  const id = env.BUDGET_DO.idFromName(budgetId);
+                  const obj = env.BUDGET_DO.get(id);
+                  const pres = await obj.fetch('https://durable/processed', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requestId }),
+                  });
+                  if (pres.status === 200) {
+                    const pj = await pres.json();
+                    shouldCharge = pj.wasNew === true;
+                  }
+                } catch (e) {
+                  console.error('idempotency check failed', e);
+                }
+              }
+              if (shouldCharge) {
+                await addSpend(budgetId, dateKey, cost);
+                await recordAudit(budgetId, model, { prompt, completion }, cost);
+              } else {
+                // duplicate request; skip charging but still record a lightweight audit that a duplicate occurred
+                try { await env.BUDGET_KV.put(`audit:${budgetId}:dup:${Date.now()}`, JSON.stringify({ budgetId, model, duplicateOf: requestId, timestamp: new Date().toISOString() })); } catch(e){}
+              }
             }
           }
         } catch (e) {
@@ -204,8 +229,33 @@ export default {
               let rate = pricing[model] ?? pricing[Object.keys(pricing).find(k => model && model.includes(k))] ?? pricing.default ?? 0.005;
               const cost = estimateCostFromPricing(rate, prompt + completion);
               if (cost > 0) {
-                await addSpend(budgetId, dateKey, cost);
-                await recordAudit(budgetId, model, { prompt, completion }, cost);
+                // Idempotency: if client provided X-Request-ID header, check with DO whether we've already processed this request
+                const requestId = request.headers.get('X-Request-ID');
+                let shouldCharge = true;
+                if (requestId) {
+                  try {
+                    const id = env.BUDGET_DO.idFromName(budgetId);
+                    const obj = env.BUDGET_DO.get(id);
+                    const pres = await obj.fetch('https://durable/processed', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ requestId }),
+                    });
+                    if (pres.status === 200) {
+                      const pj = await pres.json();
+                      shouldCharge = pj.wasNew === true;
+                    }
+                  } catch (e) {
+                    console.error('idempotency check failed', e);
+                  }
+                }
+                if (shouldCharge) {
+                  await addSpend(budgetId, dateKey, cost);
+                  await recordAudit(budgetId, model, { prompt, completion }, cost);
+                } else {
+                  // duplicate request; skip charging but still record a lightweight audit that a duplicate occurred
+                  try { await env.BUDGET_KV.put(`audit:${budgetId}:dup:${Date.now()}`, JSON.stringify({ budgetId, model, duplicateOf: requestId, timestamp: new Date().toISOString() })); } catch(e){}
+                }
               }
             }
           } catch (e) {
