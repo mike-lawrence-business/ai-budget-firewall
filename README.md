@@ -92,33 +92,47 @@ const openai = new OpenAI({
 ## ⚙️ How It Works
 
 1.  **Intercepts Request:** The worker receives your API call.
-2.  **Checks KV:** It checks Cloudflare KV for your current daily spend.
+2.  **Checks Budget:** It checks a Cloudflare Durable Object counter for your budget id and today's date (UTC).
 3.  **Adjudicates:**
     *   **Under Budget:** Forwards the request to OpenAI.
     *   **Over Budget:** Returns `429 Too Many Requests` immediately.
-4.  **Updates Usage:** After the OpenAI response comes back, it calculates the cost (based on tokens) and increments your spend in KV.
+4.  **Updates Usage:** After the OpenAI response completes (stream or non-stream), it calculates the cost using a pricing table and atomically increments the per-day Durable Object counter.
 
-*Privacy Note: The worker does NOT log your prompt text or completion text. It only inspects the `usage` field in the response JSON to count tokens.*
+
+### Key Implementation Details
+- Durable Objects: per-budget-id Durable Object instances provide atomic increments for date-scoped keys (usage:YYYY-MM-DD:<budget-id>). This ensures no race conditions when multiple requests finish at the same time.
+- Date-scoped keys mean counters effectively reset every midnight UTC because a new date key is used.
+- Pricing table: configurable via the KV key `pricing_table` (JSON) or falls back to sensible defaults embedded in the worker.
+- Audit log: minimal metadata (budget-id, model, tokens, cost, timestamp) is written to KV under `audit:<budgetId>:<timestamp>:<rand>`; NO prompt or completion text is ever stored.
 
 ---
 
-## 🛠️ Advanced Configuration
+## 🔧 Configuration
+- DAILY_BUDGET: set in `wrangler.toml` as an environment variable or via `vars` (string). If not set, per-budget limits can be stored in KV under `limit:<budgetId>`.
+- Pricing table (KV): store a JSON map in BUDGET_KV with key `pricing_table`, e.g.: `{"gpt-3.5-turbo":0.002, "gpt-4":0.09}` where values are USD per 1k tokens.
+- Durable Object binding: the worker expects a Durable Object binding named `BUDGET_DO` of class `BudgetCounter`.
 
-### Custom Limits per Key/User
-You can pass a custom header `X-Budget-ID` to track separate budgets for different apps or users.
 
-```python
-client = OpenAI(
-    base_url="...",
-    default_headers={"X-Budget-ID": "project-alpha"}
-)
-```
+## /usage Endpoint
+- GET /usage with header `X-Budget-ID` returns `{ budgetId, date, current_spend, remaining }`.
+- Authentication: the endpoint requires the `X-Budget-ID` header; it does not expose prompt or completion content.
 
-### Resetting Usage
-Usage keys expire automatically every 24 hours (TTL). To manually reset:
+---
+
+## Tests
+Run the basic unit tests (estimator) locally:
+
 ```bash
-npx wrangler kv:key delete usage:default --binding=BUDGET_KV
+npm test
 ```
+
+There is also a smoke test script you can extend to exercise the Durable Object locally with `wrangler dev`.
+
+---
+
+## Privacy & Security
+- We only persist token counts and cost metadata. Prompt and completion text are never stored.
+- The proxy forwards the `Authorization` header (your OpenAI key) to OpenAI and does not persist it.
 
 ---
 
