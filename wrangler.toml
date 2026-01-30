@@ -5,3 +5,8 @@ compatibility_date = "2023-12-01"
 [[kv_namespaces]]
 binding = "BUDGET_KV"
 id = "cd8c7d7a4bdd446abe154eef07926b72"
+
+[durable_objects]
+bindings = [
+  { name = "BUDGET_DO", class_name = "BudgetCounter" }
+]

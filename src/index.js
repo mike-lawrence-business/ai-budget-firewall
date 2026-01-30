@@ -1,7 +1,8 @@
+import { estimateCost } from "./costs.js";
 
 export default {
   async fetch(request, env, ctx) {
-    // 1. Handle OPTIONS (CORS)
+    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -13,124 +14,224 @@ export default {
     }
 
     const url = new URL(request.url);
-    
-    // 2. Configuration & Key Extraction
-    const authHeader = request.headers.get("Authorization");
-    // We use the Authorization header (API Key) as the identifier for the budget bucket 
-    // strictly for lookup, but we won't log it.
-    // Alternatively, user can provide a custom header 'X-Budget-ID' to group multiple keys.
-    const budgetId = request.headers.get("X-Budget-ID") || "default"; 
-    const limitHeader = request.headers.get("X-Budget-Limit"); // Allow setting limit via header for MVP convenience
-    
-    // 3. Check KV for current usage
-    // KV Namespace: BUDGET_KV
-    // Key: usage:<budgetId>
-    // Key: limit:<budgetId>
-    
-    let currentUsage = 0;
-    let limit = 5.00; // Default $5.00
-    
+    const pathname = url.pathname;
+
+    // Budgets are identified by X-Budget-ID header or default
+    const budgetId = request.headers.get("X-Budget-ID") || "default";
+
+    // Allow override of budget via header for backwards compatibility
+    const limitHeader = request.headers.get("X-Budget-Limit");
+
+    // Today's date (UTC) for date-scoped counters
+    const today = new Date();
+    const yyyy = today.getUTCFullYear();
+    const mm = String(today.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(today.getUTCDate()).padStart(2, "0");
+    const dateKey = `${yyyy}-${mm}-${dd}`;
+
+    // Helper: get pricing table from KV or env var
+    async function getPricing() {
+      try {
+        const raw = await env.BUDGET_KV.get("pricing_table");
+        if (raw) return JSON.parse(raw);
+      } catch (e) {
+        // ignore
+      }
+      // defaults (USD per 1k tokens)
+      return {
+        "gpt-4": 0.09,
+        "gpt-4o": 0.09,
+        "gpt-4-turbo": 0.04,
+        "gpt-3.5-turbo": 0.002,
+        "default": 0.005
+      };
+    }
+
+    // Helper: read current spend from Durable Object
+    async function getCurrentSpend(budgetId, date) {
+      try {
+        const id = env.BUDGET_DO.idFromName(budgetId);
+        const obj = env.BUDGET_DO.get(id);
+        const res = await obj.fetch(`https://durable/get?date=${date}`);
+        if (res.status === 200) {
+          const j = await res.json();
+          return parseFloat(j.amount || 0);
+        }
+      } catch (e) {
+        console.error("DO get error", e);
+      }
+      return 0;
+    }
+
+    // Helper: atomic increment
+    async function addSpend(budgetId, date, amount) {
+      try {
+        const id = env.BUDGET_DO.idFromName(budgetId);
+        const obj = env.BUDGET_DO.get(id);
+        const res = await obj.fetch("https://durable/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ date, amount }),
+        });
+        if (res.status === 200) return await res.json();
+      } catch (e) {
+        console.error("DO add error", e);
+      }
+      return null;
+    }
+
+    // Usage endpoint
+    if (pathname === "/usage") {
+      const current = await getCurrentSpend(budgetId, dateKey);
+      // Determine limit: env var -> KV override -> header
+      let limit = parseFloat(env.DAILY_BUDGET || 0);
+      try {
+        const storedLimit = await env.BUDGET_KV.get(`limit:${budgetId}`);
+        if (storedLimit) limit = parseFloat(storedLimit);
+      } catch (e) {}
+      if (limitHeader) limit = parseFloat(limitHeader);
+      return new Response(JSON.stringify({ budgetId, date: dateKey, current_spend: current, remaining: Math.max(0, limit - current) }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
+    // Preflight budget check before forwarding
+    const currentSpend = await getCurrentSpend(budgetId, dateKey);
+    let limit = parseFloat(env.DAILY_BUDGET || 0);
     try {
-      const storedUsage = await env.BUDGET_KV.get(`usage:${budgetId}`);
-      if (storedUsage) currentUsage = parseFloat(storedUsage);
-      
       const storedLimit = await env.BUDGET_KV.get(`limit:${budgetId}`);
       if (storedLimit) limit = parseFloat(storedLimit);
-      
-      // Override limit if header provided (and update KV for persistence)
-      if (limitHeader) {
-        limit = parseFloat(limitHeader);
-        ctx.waitUntil(env.BUDGET_KV.put(`limit:${budgetId}`, limit.toString()));
-      }
-    } catch (e) {
-      // If KV fails, we default to allow but log error? 
-      // Or fail safe? Let's fail safe (block) or proceed? 
-      // MVP: Proceed with 0 usage assumption if KV is down, but likely KV is stable.
-      console.error("KV Error", e);
+    } catch (e) {}
+    if (limitHeader) limit = parseFloat(limitHeader);
+
+    if (limit > 0 && currentSpend >= limit) {
+      return new Response(JSON.stringify({ error: { message: `Budget Exceeded. Current: $${currentSpend.toFixed(6)}, Limit: $${limit.toFixed(2)}`, type: "budget_firewall_error", code: 429 } }), { status: 429, headers: { "Content-Type": "application/json" } });
     }
 
-    // 4. Check Limit
-    if (currentUsage >= limit) {
-      return new Response(JSON.stringify({
-        error: {
-          message: `Budget Exceeded. Current: $${currentUsage.toFixed(4)}, Limit: $${limit.toFixed(2)}`,
-          type: "budget_firewall_error",
-          code: 429
-        }
-      }), { status: 429, headers: { "Content-Type": "application/json" } });
-    }
-
-    // 5. Forward Request
-    // We need to construct a new request to OpenAI
-    // Target: https://api.openai.com/v1/...
+    // Forward to OpenAI API
     const targetUrl = new URL(request.url);
     targetUrl.hostname = "api.openai.com";
     targetUrl.protocol = "https:";
     targetUrl.port = "";
-    
-    const newRequest = new Request(targetUrl, request);
-    // Ensure host header is correct or removed (fetch handles it)
-    
-    let response;
+    const forwardReq = new Request(targetUrl.toString(), request);
+
+    let upstreamResp;
     try {
-      response = await fetch(newRequest);
+      upstreamResp = await fetch(forwardReq);
     } catch (e) {
       return new Response(JSON.stringify({ error: "Upstream connection error" }), { status: 502 });
     }
 
-    // 6. Calculate Cost (Post-Response)
-    // Clone response to read body without consuming the original stream for the client
-    const responseClone = response.clone();
-    
-    ctx.waitUntil((async () => {
+    // After response: compute cost and atomically increment via DO
+    // Handle streaming vs JSON
+    const contentType = upstreamResp.headers.get("content-type") || "";
+
+    // Function to record audit entry in KV without storing any text
+    async function recordAudit(budgetId, model, tokens, cost) {
       try {
-        // Only parse JSON responses for usage data
-        const contentType = response.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await responseClone.json();
-          if (data.usage) {
-            // Calculate cost based on model
-            const model = data.model || "gpt-3.5-turbo"; // fallback
-            const promptTokens = data.usage.prompt_tokens || 0;
-            const completionTokens = data.usage.completion_tokens || 0;
-            
-            const cost = estimateCost(model, promptTokens, completionTokens);
-            
+        const ts = new Date().toISOString();
+        const key = `audit:${budgetId}:${ts}:${Math.random().toString(36).slice(2,8)}`;
+        const val = JSON.stringify({ budgetId, model, tokens, cost, timestamp: ts });
+        await env.BUDGET_KV.put(key, val);
+      } catch (e) {
+        console.error("audit write failed", e);
+      }
+    }
+
+    // Non-streaming JSON responses
+    if (contentType.includes("application/json")) {
+      const cloned = upstreamResp.clone();
+      ctx.waitUntil((async () => {
+        try {
+          const data = await cloned.json();
+          if (data && data.usage) {
+            const model = data.model || (data.model ?? "gpt-3.5-turbo");
+            const prompt = data.usage.prompt_tokens || 0;
+            const completion = data.usage.completion_tokens || 0;
+            const pricing = await getPricing();
+            // Determine rate (USD per 1k tokens)
+            let rate = pricing[model] ?? pricing[Object.keys(pricing).find(k => model && model.includes(k))] ?? pricing.default ?? 0.005;
+            const cost = estimateCostFromPricing(rate, prompt + completion);
             if (cost > 0) {
-              const newUsage = currentUsage + cost;
-              await env.BUDGET_KV.put(`usage:${budgetId}`, newUsage.toString());
-              console.log(`[Budget] ID: ${budgetId} | Cost: $${cost.toFixed(6)} | New Total: $${newUsage.toFixed(6)}`);
+              await addSpend(budgetId, dateKey, cost);
+              await recordAudit(budgetId, model, { prompt, completion }, cost);
             }
           }
+        } catch (e) {
+          console.error("post-response accounting error", e);
         }
-      } catch (err) {
-        console.error("Error updating usage:", err);
-      }
-    })());
+      })());
 
-    return response;
+      return upstreamResp;
+    }
+
+    // Streaming (e.g., text/event-stream) -> tee the body to capture tokens if the upstream includes usage in final JSON
+    if (contentType.includes("text/event-stream") || contentType.includes("stream")) {
+      try {
+        const [streamForClient, streamForProcessor] = upstreamResp.body.tee();
+        // Return the client stream immediately
+        const clientResp = new Response(streamForClient, { status: upstreamResp.status, statusText: upstreamResp.statusText, headers: upstreamResp.headers });
+
+        // Process the second stream to capture events and possibly final usage data
+        ctx.waitUntil((async () => {
+          try {
+            const reader = streamForProcessor.getReader();
+            let decoder = new TextDecoder();
+            let buf = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              // Optionally parse lines/events here. We'll keep accumulating and try to find JSON 'usage' at end.
+            }
+            // Attempt to extract a JSON object with usage from the buffered text
+            const maybeJson = extractFinalJson(buf);
+            if (maybeJson && maybeJson.usage) {
+              const model = maybeJson.model || "gpt-3.5-turbo";
+              const prompt = maybeJson.usage.prompt_tokens || 0;
+              const completion = maybeJson.usage.completion_tokens || 0;
+              const pricing = await getPricing();
+              let rate = pricing[model] ?? pricing[Object.keys(pricing).find(k => model && model.includes(k))] ?? pricing.default ?? 0.005;
+              const cost = estimateCostFromPricing(rate, prompt + completion);
+              if (cost > 0) {
+                await addSpend(budgetId, dateKey, cost);
+                await recordAudit(budgetId, model, { prompt, completion }, cost);
+              }
+            }
+          } catch (e) {
+            console.error("stream processing error", e);
+          }
+        })());
+
+        return clientResp;
+      } catch (e) {
+        console.error("stream tee failed", e);
+        return upstreamResp;
+      }
+    }
+
+    // Fallback: return upstream response
+    return upstreamResp;
   },
 };
 
-// Simple cost estimator (Rates as of Late 2023/Early 2024 - simplified)
-export function estimateCost(model, promptTokens, completionTokens) {
-  let promptRate = 0; // per 1k tokens
-  let completionRate = 0; // per 1k tokens
-
-  if (model.includes("gpt-4-turbo") || model.includes("gpt-4o")) {
-    promptRate = 0.01; 
-    completionRate = 0.03;
-  } else if (model.includes("gpt-4")) {
-    promptRate = 0.03;
-    completionRate = 0.06;
-  } else if (model.includes("gpt-3.5-turbo")) {
-    promptRate = 0.0005;
-    completionRate = 0.0015;
-  } else {
-    // Fallback generic rate
-    promptRate = 0.001; 
-    completionRate = 0.002;
+function extractFinalJson(text) {
+  // Try to find a JSON object at the end of the stream
+  try {
+    const idx = text.lastIndexOf("\n\n");
+    const candidate = text.slice(idx + 2).trim();
+    if (candidate.startsWith("{")) return JSON.parse(candidate);
+  } catch (e) {}
+  // Try to find last brace pair
+  const lastOpen = text.lastIndexOf("{");
+  const lastClose = text.lastIndexOf("}");
+  if (lastOpen !== -1 && lastClose !== -1 && lastClose > lastOpen) {
+    try {
+      const sub = text.slice(lastOpen, lastClose + 1);
+      return JSON.parse(sub);
+    } catch (e) {}
   }
+  return null;
+}
 
-  return (promptTokens / 1000 * promptRate) + (completionTokens / 1000 * completionRate);
+function estimateCostFromPricing(ratePer1k, tokens) {
+  return (tokens / 1000) * ratePer1k;
 }
