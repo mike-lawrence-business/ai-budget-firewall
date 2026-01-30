@@ -128,9 +128,20 @@ export default {
     // Function to record audit entry in KV without storing any text
     async function recordAudit(budgetId, model, tokens, cost) {
       try {
+        // Sanitize tokens to ensure no prompt/completion text is stored
+        let sanitizedTokens = null;
+        if (typeof tokens === 'number') {
+          sanitizedTokens = { total: Number(tokens) };
+        } else if (tokens && typeof tokens === 'object') {
+          const p = Number(tokens.prompt || 0);
+          const c = Number(tokens.completion || 0);
+          sanitizedTokens = { prompt: p, completion: c, total: p + c };
+        } else {
+          sanitizedTokens = { total: 0 };
+        }
         const ts = new Date().toISOString();
         const key = `audit:${budgetId}:${ts}:${Math.random().toString(36).slice(2,8)}`;
-        const val = JSON.stringify({ budgetId, model, tokens, cost, timestamp: ts });
+        const val = JSON.stringify({ budgetId, model, tokens: sanitizedTokens, cost: Number(cost), timestamp: ts });
         await env.BUDGET_KV.put(key, val);
       } catch (e) {
         console.error("audit write failed", e);
@@ -215,20 +226,33 @@ export default {
 };
 
 function extractFinalJson(text) {
-  // Try to find a JSON object at the end of the stream
+  // Try to find a JSON object at the end of the stream (double newline separated)
   try {
     const idx = text.lastIndexOf("\n\n");
-    const candidate = text.slice(idx + 2).trim();
-    if (candidate.startsWith("{")) return JSON.parse(candidate);
+    if (idx !== -1) {
+      const candidate = text.slice(idx + 2).trim();
+      if (candidate.startsWith("{")) return JSON.parse(candidate);
+    }
   } catch (e) {}
-  // Try to find last brace pair
-  const lastOpen = text.lastIndexOf("{");
-  const lastClose = text.lastIndexOf("}");
-  if (lastOpen !== -1 && lastClose !== -1 && lastClose > lastOpen) {
-    try {
-      const sub = text.slice(lastOpen, lastClose + 1);
-      return JSON.parse(sub);
-    } catch (e) {}
+
+  // Find the last '}' and attempt to find a matching opening '{' before it
+  const lastClose = text.lastIndexOf('}');
+  if (lastClose !== -1) {
+    let depth = 0;
+    for (let i = lastClose; i >= 0; i--) {
+      const ch = text[i];
+      if (ch === '}') depth++;
+      else if (ch === '{') depth--;
+      if (depth === 0) {
+        const sub = text.slice(i, lastClose + 1);
+        try {
+          return JSON.parse(sub);
+        } catch (e) {
+          // continue searching earlier close brace
+          break;
+        }
+      }
+    }
   }
   return null;
 }
@@ -236,3 +260,6 @@ function extractFinalJson(text) {
 function estimateCostFromPricing(ratePer1k, tokens) {
   return (tokens / 1000) * ratePer1k;
 }
+
+// Export helper for unit tests
+export { extractFinalJson };
