@@ -3,6 +3,11 @@ main = "src/index.js"
 compatibility_date = "2026-01-31"
 account_id = "9b9bf8a6fc6837d8f29fa0d325f30116"
 
+# Bind the production KV namespace used by earlier deployments
+kv_namespaces = [
+  { binding = "BUDGET_KV", id = "cd8c7d7a4bdd446abe154eef07926b72" }
+]
+
 [env.preview]
   workers_dev = true
   name = "ai-budget-firewall-preview"
