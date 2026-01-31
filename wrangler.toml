@@ -1,18 +1,19 @@
 name = "ai-budget-firewall"
 main = "src/index.js"
-compatibility_date = "2023-12-01"
+compatibility_date = "2026-01-31"
+account_id = "9b9bf8a6fc6837d8f29fa0d325f30116"
 
-# KV namespace for pricing table, limits, and audit entries
-[[kv_namespaces]]
-binding = "BUDGET_KV"
-id = "cd8c7d7a4bdd446abe154eef07926b72"
+[build]
+  upload_format = "service-worker"
 
-[durable_objects]
-bindings = [
-  { name = "BUDGET_DO", class_name = "BudgetCounter" }
-]
+[env.preview]
+  workers_dev = true
+  name = "ai-budget-firewall-preview"
 
-# Optional environment/static configuration
-[vars]
-# Default daily budget in USD (can be overridden per-budget via KV key limit:<budgetId> or the X-Budget-Limit header)
-DAILY_BUDGET = "0"
+  [[env.preview.kv_namespaces]]
+  binding = "BUDGET_KV"
+  title = "clawd_budget_kv_preview"
+
+  [[env.preview.durable_objects]]
+  binding = "BUDGET_DO"
+  class_name = "BudgetCounter"
