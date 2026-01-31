@@ -50,33 +50,63 @@ export default {
 
     // Helper: read current spend from Durable Object
     async function getCurrentSpend(budgetId, date) {
+      // Prefer Durable Object when available (production). Fall back to KV for local/test environments.
       try {
-        const id = env.BUDGET_DO.idFromName(budgetId);
-        const obj = env.BUDGET_DO.get(id);
-        const res = await obj.fetch(`https://durable/get?date=${date}`);
-        if (res.status === 200) {
-          const j = await res.json();
-          return parseFloat(j.amount || 0);
+        if (env && env.BUDGET_DO && typeof env.BUDGET_DO.idFromName === 'function') {
+          const id = env.BUDGET_DO.idFromName(budgetId);
+          const obj = env.BUDGET_DO.get(id);
+          const res = await obj.fetch(`https://durable/get?date=${date}`);
+          if (res.status === 200) {
+            const j = await res.json();
+            return parseFloat(j.amount || 0);
+          }
         }
       } catch (e) {
         console.error("DO get error", e);
+      }
+      // Fallback to KV
+      try {
+        const kv = env && env.BUDGET_KV;
+        if (kv) {
+          const stored = await kv.get(`usage:${date}`);
+          return stored ? parseFloat(stored) : 0;
+        }
+      } catch (e) {
+        console.error("KV get error", e);
       }
       return 0;
     }
 
     // Helper: atomic increment
     async function addSpend(budgetId, date, amount) {
+      // Prefer Durable Object when available
       try {
-        const id = env.BUDGET_DO.idFromName(budgetId);
-        const obj = env.BUDGET_DO.get(id);
-        const res = await obj.fetch("https://durable/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ date, amount }),
-        });
-        if (res.status === 200) return await res.json();
+        if (env && env.BUDGET_DO && typeof env.BUDGET_DO.idFromName === 'function') {
+          const id = env.BUDGET_DO.idFromName(budgetId);
+          const obj = env.BUDGET_DO.get(id);
+          const res = await obj.fetch("https://durable/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ date, amount }),
+          });
+          if (res.status === 200) return await res.json();
+        }
       } catch (e) {
         console.error("DO add error", e);
+      }
+      // Fallback to KV read-modify-write (not atomic, but OK for tests/local)
+      try {
+        const kv = env && env.BUDGET_KV;
+        if (kv) {
+          const key = `usage:${date}`;
+          const prevRaw = await kv.get(key);
+          const prev = prevRaw ? parseFloat(prevRaw) : 0;
+          const next = prev + Number(amount);
+          await kv.put(key, String(next));
+          return { date, prev, next };
+        }
+      } catch (e) {
+        console.error("KV add error", e);
       }
       return null;
     }

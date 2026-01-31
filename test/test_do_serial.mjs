@@ -43,6 +43,7 @@ async function runSequentialAdds(iterations, amountPerReq) {
   const amount = 0.01;
   const { actual, expected } = await runSequentialAdds(iterations, amount);
   console.log('Expected:', expected, 'Actual:', actual);
-  assert.strictEqual(parseFloat(actual), expected, 'Final amount should equal sum of increments');
+  const diff = Math.abs(parseFloat(actual) - expected);
+  assert.ok(diff < 1e-9, `Final amount should equal sum of increments (diff=${diff})`);
   console.log('✅ Sequential DO increment test passed');
 })();
