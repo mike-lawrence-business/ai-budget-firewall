@@ -18,3 +18,7 @@ account_id = "9b9bf8a6fc6837d8f29fa0d325f30116"
     { name = "BUDGET_DO", class_name = "BudgetCounter" }
   ]
 
+[[migrations]]
+  tag = "v1"
+  new_classes = ["BudgetCounter"]
+
