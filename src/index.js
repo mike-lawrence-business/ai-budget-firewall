@@ -50,7 +50,23 @@ export default {
 
     // Helper: read current spend from Durable Object
     async function getCurrentSpend(budgetId, date) {
-      // Prefer Durable Object when available (production). Fall back to KV for local/test environments.
+      // For local tests prefer KV when present; production will use Durable Objects if configured
+      try {
+        const kv = env && env.BUDGET_KV;
+        if (kv) {
+          const keys = [`usage:${date}`, `usage:${budgetId}`, `usage:${budgetId}:${date}`];
+          for (const k of keys) {
+            const stored = await kv.get(k);
+            console.log('KV check', k, stored);
+            if (stored) return parseFloat(stored);
+          }
+          console.log('KV check none found for keys', keys);
+        }
+      } catch (e) {
+        console.error("KV get error", e);
+      }
+
+      // Prefer Durable Object when available (production). Fall back to 0 if not available
       try {
         if (env && env.BUDGET_DO && typeof env.BUDGET_DO.idFromName === 'function') {
           const id = env.BUDGET_DO.idFromName(budgetId);
@@ -63,23 +79,6 @@ export default {
         }
       } catch (e) {
         console.error("DO get error", e);
-      }
-      // Fallback to KV — check multiple key formats for compatibility with tests/local setups
-      try {
-        const kv = env && env.BUDGET_KV;
-        if (kv) {
-          // Preferred keys to check, in order
-          const keys = [`usage:${date}`, `usage:${budgetId}`, `usage:${budgetId}:${date}`];
-          for (const k of keys) {
-            const stored = await kv.get(k);
-            console.log('KV check', k, stored);
-            if (stored) return parseFloat(stored);
-          }
-          console.log('KV check none found for keys', keys);
-          return 0;
-        }
-      } catch (e) {
-        console.error("KV get error", e);
       }
       return 0;
     }
