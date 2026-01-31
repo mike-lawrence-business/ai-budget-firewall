@@ -72,8 +72,10 @@ export default {
           const keys = [`usage:${date}`, `usage:${budgetId}`, `usage:${budgetId}:${date}`];
           for (const k of keys) {
             const stored = await kv.get(k);
+            console.log('KV check', k, stored);
             if (stored) return parseFloat(stored);
           }
+          console.log('KV check none found for keys', keys);
           return 0;
         }
       } catch (e) {
