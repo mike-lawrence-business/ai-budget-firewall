@@ -152,6 +152,33 @@ export default {
       }
     }
 
+    // Debug endpoint to inspect KV keys and Durable Object value
+    if (pathname === "/debug/peek") {
+      try {
+        const date = url.searchParams.get('date') || dateKey;
+        const keys = [`usage:${date}`, `usage:${budgetId}`, `usage:${budgetId}:${date}`];
+        const kv = env && env.BUDGET_KV;
+        const kvVals = {};
+        if (kv) {
+          for (const k of keys) {
+            try { kvVals[k] = await kv.get(k); } catch(e) { kvVals[k] = null; }
+          }
+        }
+        let doVal = null;
+        try {
+          if (env && env.BUDGET_DO && typeof env.BUDGET_DO.idFromName === 'function') {
+            const id = env.BUDGET_DO.idFromName(budgetId);
+            const obj = env.BUDGET_DO.get(id);
+            const res = await obj.fetch(`https://durable/get?date=${date}`);
+            if (res.status === 200) doVal = await res.json();
+          }
+        } catch (e) { doVal = { error: String(e) }; }
+        return new Response(JSON.stringify({ kv: kvVals, durable: doVal }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
     // Preflight budget check before forwarding
     const currentSpend = await getCurrentSpend(budgetId, dateKey);
     let limit = parseFloat(env.DAILY_BUDGET || 0);
