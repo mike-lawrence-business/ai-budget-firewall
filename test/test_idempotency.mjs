@@ -1,5 +1,6 @@
-import fetch from 'node-fetch';
 import assert from 'assert';
+// Use global fetch available in Node 18+
+const fetchFn = global.fetch || (await import('node-fetch').then(m=>m.default));
 
 // Simple test that simulates calling the DO processed endpoint twice
 // This test assumes the DO is reachable at the local emulation URL used in other tests.
