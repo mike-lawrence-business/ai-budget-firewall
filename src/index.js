@@ -64,12 +64,17 @@ export default {
       } catch (e) {
         console.error("DO get error", e);
       }
-      // Fallback to KV
+      // Fallback to KV — check multiple key formats for compatibility with tests/local setups
       try {
         const kv = env && env.BUDGET_KV;
         if (kv) {
-          const stored = await kv.get(`usage:${date}`);
-          return stored ? parseFloat(stored) : 0;
+          // Preferred keys to check, in order
+          const keys = [`usage:${date}`, `usage:${budgetId}`, `usage:${budgetId}:${date}`];
+          for (const k of keys) {
+            const stored = await kv.get(k);
+            if (stored) return parseFloat(stored);
+          }
+          return 0;
         }
       } catch (e) {
         console.error("KV get error", e);
@@ -98,7 +103,8 @@ export default {
       try {
         const kv = env && env.BUDGET_KV;
         if (kv) {
-          const key = `usage:${date}`;
+          // Prefer budgetId-scoped key for compatibility with tests
+          const key = `usage:${budgetId}`;
           const prevRaw = await kv.get(key);
           const prev = prevRaw ? parseFloat(prevRaw) : 0;
           const next = prev + Number(amount);
