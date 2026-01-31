@@ -94,6 +94,25 @@ export default {
       return new Response(JSON.stringify({ budgetId, date: dateKey, current_spend: current, remaining: Math.max(0, limit - current) }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
 
+    // Expose DO test proxy endpoints under /do/* to allow external testing of DO methods
+    if (pathname.startsWith("/do/")) {
+      try {
+        const subpath = pathname.replace("/do", "");
+        const id = env.BUDGET_DO.idFromName(budgetId);
+        const obj = env.BUDGET_DO.get(id);
+        // Forward the request to the Durable Object
+        const forward = new Request(`https://durable${subpath}` , {
+          method: request.method,
+          headers: request.headers,
+          body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.clone().arrayBuffer(),
+        });
+        const resp = await obj.fetch(forward);
+        return resp;
+      } catch (e) {
+        return new Response(JSON.stringify({ error: 'DO proxy error', detail: String(e) }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
     // Preflight budget check before forwarding
     const currentSpend = await getCurrentSpend(budgetId, dateKey);
     let limit = parseFloat(env.DAILY_BUDGET || 0);
