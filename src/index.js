@@ -215,10 +215,8 @@ export default {
             const model = data.model || (data.model ?? "gpt-3.5-turbo");
             const prompt = data.usage.prompt_tokens || 0;
             const completion = data.usage.completion_tokens || 0;
-            const pricing = await getPricing();
-            // Determine rate (USD per 1k tokens)
-            let rate = pricing[model] ?? pricing[Object.keys(pricing).find(k => model && model.includes(k))] ?? pricing.default ?? 0.005;
-            const cost = estimateCostFromPricing(rate, prompt + completion);
+            // Determine cost using centralized estimator
+            const cost = estimateCost(model, prompt, completion);
             if (cost > 0) {
               // Idempotency: if client provided X-Request-ID header, check with DO whether we've already processed this request
               const requestId = request.headers.get('X-Request-ID');
@@ -282,9 +280,8 @@ export default {
               const model = maybeJson.model || "gpt-3.5-turbo";
               const prompt = maybeJson.usage.prompt_tokens || 0;
               const completion = maybeJson.usage.completion_tokens || 0;
-              const pricing = await getPricing();
-              let rate = pricing[model] ?? pricing[Object.keys(pricing).find(k => model && model.includes(k))] ?? pricing.default ?? 0.005;
-              const cost = estimateCostFromPricing(rate, prompt + completion);
+              // Determine cost using centralized estimator
+              const cost = estimateCost(model, prompt, completion);
               if (cost > 0) {
                 // Idempotency: if client provided X-Request-ID header, check with DO whether we've already processed this request
                 const requestId = request.headers.get('X-Request-ID');
