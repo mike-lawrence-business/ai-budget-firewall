@@ -13,5 +13,8 @@ account_id = "9b9bf8a6fc6837d8f29fa0d325f30116"
   ]
 
   # Durable Object binding: class_name must match the exported class in src/budget_do.js
-  durable_objects = { binding = "BUDGET_DO", class_name = "BudgetCounter" }
+  [env.preview.durable_objects]
+  bindings = [
+    { name = "BUDGET_DO", class_name = "BudgetCounter" }
+  ]
 
