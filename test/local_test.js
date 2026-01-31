@@ -38,7 +38,7 @@ try {
 
 // --- Test 2: Blocking Logic (Over Limit) ---
 console.log("\nTest 2: Blocking Logic (Over Limit)");
-(async () => {
+async function testBlockingLogic() {
   try {
     // Setup: Limit $5, Usage $6
     mockKV.store['limit:default'] = "5.00";
@@ -59,11 +59,11 @@ console.log("\nTest 2: Blocking Logic (Over Limit)");
   } catch (e) {
     console.error("❌ Blocking Logic Failed:", e);
   }
-})();
+}
 
 // --- Test 3: Allowed Logic (Under Limit) ---
 console.log("\nTest 3: Allowed Logic (Under Limit)");
-(async () => {
+async function testAllowedLogic() {
   try {
     // Setup: Limit $5, Usage $1
     mockKV.store['limit:default'] = "5.00";
@@ -106,4 +106,10 @@ console.log("\nTest 3: Allowed Logic (Under Limit)");
   } catch (e) {
     console.error("❌ Allowed Logic Failed:", e);
   }
+}
+
+// Run tests sequentially
+(async () => {
+  await testBlockingLogic();
+  await testAllowedLogic();
 })();
