@@ -138,8 +138,9 @@ export default {
         const subpath = pathname.replace("/do", "");
         const id = env.BUDGET_DO.idFromName(budgetId);
         const obj = env.BUDGET_DO.get(id);
-        // Forward the request to the Durable Object
-        const forward = new Request(`https://durable${subpath}` , {
+        // Forward the request to the Durable Object (preserve query string)
+        const forwardUrl = `https://durable${subpath}${url.search || ""}`;
+        const forward = new Request(forwardUrl, {
           method: request.method,
           headers: request.headers,
           body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.clone().arrayBuffer(),
