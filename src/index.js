@@ -330,5 +330,10 @@ function estimateCostFromPricing(ratePer1k, tokens) {
   return (tokens / 1000) * ratePer1k;
 }
 
+// Backwards-compatible export for tests
+export function estimateCost(ratePer1k, tokens) {
+  return estimateCostFromPricing(ratePer1k, tokens);
+}
+
 // Export helper for unit tests
 export { extractFinalJson };
