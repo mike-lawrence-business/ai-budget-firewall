@@ -23,6 +23,19 @@ kv_namespaces = [
     { name = "BUDGET_DO", class_name = "BudgetCounter" }
   ]
 
+[env.production]
+  name = "ai-budget-firewall"
+  # Production KV namespace binding (explicit)
+  kv_namespaces = [
+    { binding = "BUDGET_KV", id = "cd8c7d7a4bdd446abe154eef07926b72" }
+  ]
+
+  # Durable Object binding for production
+  [env.production.durable_objects]
+  bindings = [
+    { name = "BUDGET_DO", class_name = "BudgetCounter" }
+  ]
+
 [[migrations]]
   tag = "v1"
   new_sqlite_classes = ["BudgetCounter"]
