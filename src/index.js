@@ -109,6 +109,7 @@ export default {
           const prevRaw = await kv.get(key);
           const prev = prevRaw ? parseFloat(prevRaw) : 0;
           const next = prev + Number(amount);
+          console.log('KV add', key, 'prev=', prev, 'add=', amount, 'next=', next);
           await kv.put(key, String(next));
           return { date, prev, next };
         }
