@@ -3,17 +3,15 @@ main = "src/index.js"
 compatibility_date = "2026-01-31"
 account_id = "9b9bf8a6fc6837d8f29fa0d325f30116"
 
-[build]
-  upload_format = "service-worker"
-
 [env.preview]
   workers_dev = true
   name = "ai-budget-firewall-preview"
 
-  [[env.preview.kv_namespaces]]
-  binding = "BUDGET_KV"
-  title = "clawd_budget_kv_preview"
+  # KV namespace binding (wrangler will attempt to use existing or create a namespace if allowed)
+  kv_namespaces = [
+    { binding = "BUDGET_KV" }
+  ]
 
-  [[env.preview.durable_objects]]
-  binding = "BUDGET_DO"
-  class_name = "BudgetCounter"
+  # Durable Object binding: class_name must match the exported class in src/budget_do.js
+  durable_objects = { binding = "BUDGET_DO", class_name = "BudgetCounter" }
+
