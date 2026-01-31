@@ -134,19 +134,74 @@ export default {
 
     // Expose DO test proxy endpoints under /do/* to allow external testing of DO methods
     if (pathname.startsWith("/do/")) {
+      // If Durable Objects are available, proxy to them. If not (production binding missing),
+      // fall back to KV-based implementation for testing and compatibility.
       try {
         const subpath = pathname.replace("/do", "");
-        const id = env.BUDGET_DO.idFromName(budgetId);
-        const obj = env.BUDGET_DO.get(id);
-        // Forward the request to the Durable Object (preserve query string)
-        const forwardUrl = `https://durable${subpath}${url.search || ""}`;
-        const forward = new Request(forwardUrl, {
-          method: request.method,
-          headers: request.headers,
-          body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.clone().arrayBuffer(),
-        });
-        const resp = await obj.fetch(forward);
-        return resp;
+
+        if (env && env.BUDGET_DO && typeof env.BUDGET_DO.idFromName === 'function') {
+          const id = env.BUDGET_DO.idFromName(budgetId);
+          const obj = env.BUDGET_DO.get(id);
+          // Forward the request to the Durable Object (preserve query string)
+          const forwardUrl = `https://durable${subpath}${url.search || ""}`;
+          const forward = new Request(forwardUrl, {
+            method: request.method,
+            headers: request.headers,
+            body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.clone().arrayBuffer(),
+          });
+          const resp = await obj.fetch(forward);
+          return resp;
+        } else {
+          // KV fallback implementation for basic DO endpoints
+          const kv = env && env.BUDGET_KV;
+          if (!kv) return new Response(JSON.stringify({ error: 'No DO or KV available in this environment' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+
+          // Handle GET /do/get?date=...
+          if (subpath.startsWith('/get')) {
+            const date = url.searchParams.get('date');
+            if (!date) return new Response(JSON.stringify({ error: 'missing date' }), { status: 400 });
+            const key = `usage:${date}`;
+            const stored = await kv.get(key);
+            const amount = stored ? parseFloat(stored) : 0;
+            return new Response(JSON.stringify({ date, amount }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          // Handle POST /do/add
+          if (subpath.startsWith('/add') && request.method === 'POST') {
+            try {
+              const body = await request.json();
+              const date = body.date;
+              const amount = parseFloat(body.amount) || 0;
+              if (!date) return new Response(JSON.stringify({ error: 'missing date' }), { status: 400 });
+              const key = `usage:${date}`;
+              const prevRaw = await kv.get(key);
+              const prev = prevRaw ? parseFloat(prevRaw) : 0;
+              const next = prev + amount;
+              await kv.put(key, String(next));
+              return new Response(JSON.stringify({ date, prev, next }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            } catch (e) {
+              return new Response(JSON.stringify({ error: e.message }), { status: 400 });
+            }
+          }
+
+          // Handle POST /do/processed for idempotency
+          if (subpath.startsWith('/processed') && request.method === 'POST') {
+            try {
+              const body = await request.json();
+              const requestId = body && body.requestId;
+              if (!requestId) return new Response(JSON.stringify({ error: 'missing requestId' }), { status: 400 });
+              const key = `processed:${requestId}`;
+              const existing = await kv.get(key);
+              if (existing) return new Response(JSON.stringify({ wasNew: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+              await kv.put(key, String(Date.now()));
+              return new Response(JSON.stringify({ wasNew: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            } catch (e) {
+              return new Response(JSON.stringify({ error: e.message }), { status: 400 });
+            }
+          }
+
+          return new Response(JSON.stringify({ error: 'Unsupported DO fallback path' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+        }
       } catch (e) {
         return new Response(JSON.stringify({ error: 'DO proxy error', detail: String(e) }), { status: 500, headers: { 'Content-Type': 'application/json' } });
       }
